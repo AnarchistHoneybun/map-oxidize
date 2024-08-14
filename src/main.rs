@@ -8,9 +8,9 @@ use std::cmp::Reverse;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let file_path = "shakes.txt";
-    let num_map_workers = 4;
+    let num_map_workers = 8;
     let num_reduce_workers = 4;
-    let num_chunks = 4;
+    let num_chunks = 8;
 
     // Read the file and split into chunks
     let chunks = split_file(file_path, num_chunks).await?;
@@ -51,7 +51,7 @@ async fn split_file(file_path: &str, num_chunks: usize) -> Result<Vec<String>, s
 }
 
 async fn map_phase(chunks: &[String], num_workers: usize) -> Result<Vec<String>, std::io::Error> {
-    let chunk_queue = Arc::new(Mutex::new(chunks.to_vec()));
+    let chunk_queue = Arc::new(Mutex::new((0..chunks.len()).collect::<Vec<_>>()));
     let results = Arc::new(Mutex::new(Vec::new()));
 
     let mut handles = vec![];
@@ -59,18 +59,19 @@ async fn map_phase(chunks: &[String], num_workers: usize) -> Result<Vec<String>,
     for worker_id in 0..num_workers {
         let chunk_queue = Arc::clone(&chunk_queue);
         let results = Arc::clone(&results);
+        let chunks = chunks.to_vec();
 
         let handle = tokio::spawn(async move {
             loop {
-                let chunk = {
+                let chunk_index = {
                     let mut queue = chunk_queue.lock().await;
                     queue.pop()
                 };
 
-                match chunk {
-                    Some(text) => {
-                        let word_counts = count_words(&text);
-                        let result = format!("map_{}.txt", worker_id);
+                match chunk_index {
+                    Some(index) => {
+                        let word_counts = count_words(&chunks[index]);
+                        let result = format!("map_{}_chunk_{}.txt", worker_id, index);
                         write_map_result(&result, &word_counts).await?;
                         results.lock().await.push(result);
                     }
@@ -192,8 +193,9 @@ fn print_top_words(word_counts: &HashMap<String, usize>, n: usize) {
 
 async fn cleanup_intermediate_files(map_results: &[String]) -> Result<(), std::io::Error> {
     for file_name in map_results {
-        if let Err(e) = remove_file(file_name).await {
-            eprintln!("Error deleting file {}: {}", file_name, e);
+        match remove_file(file_name).await {
+            Ok(_) => println!("Successfully deleted: {}", file_name),
+            Err(e) => eprintln!("Error deleting file {}: {}", file_name, e),
         }
     }
     Ok(())
